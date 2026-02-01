@@ -1,0 +1,33 @@
+{
+  "hooks": {
+    "Notification": [
+      {
+        "matcher": "permission_prompt",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "osascript -e 'display notification \"需要您的确认\" with title \"AI Workflow\" sound name \"Ping\"'"
+          }
+        ]
+      },
+      {
+        "matcher": "idle_prompt",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "osascript -e 'display notification \"等待您的输入\" with title \"AI Workflow\" sound name \"Ping\"'"
+          }
+        ]
+      },
+      {
+        "matcher": "stop",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "osascript -e 'display notification \"任务已完成\" with title \"AI Workflow\" sound name \"Ping\"'"
+          }
+        ]
+      }
+    ]
+  }
+}
