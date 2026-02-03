@@ -32,6 +32,8 @@ const AgentConfigSchema = z.object({
     sessionTimeoutMs: z.number().positive(),
     sessionPersistPath: z.string().optional(),
     mcpServers: z.record(z.string(), McpServerConfigSchema).optional(),
+    model: z.string().optional(),
+    claudePath: z.string(),
   }),
   logLevel: z.enum(['debug', 'info', 'warn', 'error']),
 });
@@ -57,6 +59,8 @@ const DEFAULTS = {
   permissionMode: 'acceptEdits' as const,
   sessionTimeoutMs: 24 * 60 * 60 * 1000, // 24 hours
   logLevel: 'info' as const,
+  model: 'claude-opus-4-5-20251101', // Default to Opus 4.5
+  claudePath: 'claude', // Default to 'claude' from PATH
 };
 
 /**
@@ -76,6 +80,8 @@ const DEFAULTS = {
  *     - AGENT_SESSION_TIMEOUT_MS: Session timeout in milliseconds
  *     - AGENT_SESSION_PERSIST_PATH: Path for session persistence file
  *     - AGENT_ALLOWED_TOOLS: Comma-separated list of allowed tools
+ *     - AGENT_MODEL: Model to use (default: claude-opus-4-5-20251101)
+ *     - AGENT_CLAUDE_PATH: Path to Claude CLI executable (default: 'claude')
  *     - LOG_LEVEL: Log level (default: info)
  */
 export function loadAgentConfig(env: Record<string, string | undefined> = process.env): FullAgentConfig {
@@ -137,6 +143,8 @@ export function loadAgentConfig(env: Record<string, string | undefined> = proces
         : DEFAULTS.sessionTimeoutMs,
       sessionPersistPath: env.AGENT_SESSION_PERSIST_PATH,
       mcpServers,
+      model: env.AGENT_MODEL || DEFAULTS.model,
+      claudePath: env.AGENT_CLAUDE_PATH || DEFAULTS.claudePath,
     },
     logLevel,
   };

@@ -20,6 +20,10 @@ export interface AgentConfig {
   sessionTimeoutMs: number;
   /** MCP servers configuration */
   mcpServers?: Record<string, McpServerConfig>;
+  /** Model to use for Claude CLI (e.g., 'claude-opus-4-5-20251101') */
+  model?: string;
+  /** Path to Claude CLI executable (default: 'claude' from PATH) */
+  claudePath: string;
 }
 
 /**

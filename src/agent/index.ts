@@ -201,6 +201,7 @@ async function main(): Promise<void> {
   // Load configuration
   const config = loadAgentConfig();
   console.log(`📁 Working directory: ${config.agent.workingDirectory}`);
+  console.log(`🤖 Model: ${config.agent.model || 'default'}`);
   console.log(`🔧 Allowed tools: ${config.agent.allowedTools.join(', ')}`);
 
   // Initialize components

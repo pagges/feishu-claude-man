@@ -67,6 +67,11 @@ export class AgentExecutor {
       '--strict-mcp-config', // Ignore all MCP configurations (prevent conflicts)
     ];
 
+    // Add model if configured
+    if (this.config.model) {
+      args.push('--model', this.config.model);
+    }
+
     // Add permission mode
     if (this.config.permissionMode) {
       args.push('--permission-mode', this.config.permissionMode);
@@ -91,11 +96,12 @@ export class AgentExecutor {
       let buffer = '';
       let errorOutput = '';
 
-      console.log('[AgentExecutor] Starting claude with args:', args);
+      const claudePath = this.config.claudePath;
+      console.log('[AgentExecutor] Starting claude with path:', claudePath, 'args:', args);
 
-      // Spawn the claude process - use full path to avoid shell issues
+      // Spawn the claude process
       // Use 'ignore' for stdin to prevent claude from waiting for input
-      this.currentProcess = spawn('/opt/homebrew/bin/claude', args, {
+      this.currentProcess = spawn(claudePath, args, {
         cwd: this.config.workingDirectory,
         env: {
           ...process.env,

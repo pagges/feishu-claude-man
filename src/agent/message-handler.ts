@@ -124,6 +124,13 @@ export class MessageHandler {
     const { senderId, content, messageType } = event;
     console.log(`[DEBUG MessageHandler] Handling event from ${senderId}, type=${messageType}, content="${content}"`);
 
+    // Immediately acknowledge receipt for text messages (best effort, don't block)
+    if (messageType === 'text' && content.trim() && !content.trim().startsWith('/')) {
+      this.sender.sendMessage(senderId, '✓ 已收到').catch(() => {
+        // Ignore acknowledgment failures
+      });
+    }
+
     // Check user whitelist
     if (!this.isUserAllowed(senderId)) {
       console.log(`[DEBUG MessageHandler] User ${senderId} not allowed`);
@@ -320,8 +327,8 @@ export class MessageHandler {
     const abortController = new AbortController();
     activeAbortControllers.set(session.id, abortController);
 
-    // Send processing indicator
-    await this.sender.sendMessage(userId, '⏳ 正在处理...');
+    // Send processing indicator (stage 2: actually starting Claude)
+    await this.sender.sendMessage(userId, '⏳ 正在调用 Claude...');
 
     // Create progress tracker
     const progressTracker = this.enableProgressUpdates
