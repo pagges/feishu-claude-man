@@ -30,17 +30,50 @@ class AgentFeishuClient {
   }
 
   /**
-   * Send a text message to a user.
+   * Check if content needs card format (has code blocks or is long).
+   */
+  private needsCardFormat(content: string): boolean {
+    // Use card for: code blocks, long content, or explicit markdown
+    return (
+      content.includes('```') ||
+      content.includes('\n\n') ||
+      content.length > 500
+    );
+  }
+
+  /**
+   * Send a message to a user. Uses text for simple messages, card for formatted content.
    */
   async sendMessage(userId: string, content: string): Promise<{ messageId: string }> {
     console.log(`[DEBUG] Sending message to ${userId}: ${content.substring(0, 50)}...`);
     try {
+      let msgType: string;
+      let msgContent: string;
+
+      if (this.needsCardFormat(content)) {
+        // Use interactive card for code blocks and long content
+        msgType = 'interactive';
+        msgContent = JSON.stringify({
+          config: { wide_screen_mode: true },
+          elements: [
+            {
+              tag: 'markdown',
+              content: content,
+            },
+          ],
+        });
+      } else {
+        // Use plain text for simple messages
+        msgType = 'text';
+        msgContent = JSON.stringify({ text: content });
+      }
+
       const response = await this.larkClient.im.message.create({
         params: { receive_id_type: 'open_id' },
         data: {
           receive_id: userId,
-          msg_type: 'text',
-          content: JSON.stringify({ text: content }),
+          msg_type: msgType,
+          content: msgContent,
         },
       });
 
@@ -77,7 +110,7 @@ class AgentFeishuClient {
 
       const messageType = (message.message_type as string) || 'unknown';
 
-      // Extract text content
+      // Extract text content based on message type
       let content = '';
       if (messageType === 'text') {
         const rawContent = message.content as string | undefined;
@@ -89,6 +122,17 @@ class AgentFeishuClient {
             content = rawContent;
           }
         }
+      } else if (messageType === 'image') {
+        // Image messages are not supported yet
+        content = '[图片消息] 暂不支持图片，请发送文字描述';
+      } else if (messageType === 'file') {
+        content = '[文件消息] 暂不支持文件，请发送文字描述';
+      } else if (messageType === 'audio') {
+        content = '[语音消息] 暂不支持语音，请发送文字';
+      } else if (messageType === 'sticker') {
+        content = '[表情消息]';
+      } else {
+        content = `[${messageType}消息] 暂不支持此类型，请发送文字`;
       }
 
       // Extract sender info
