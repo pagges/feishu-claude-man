@@ -2,7 +2,27 @@
 
 让 [Claude Code](https://docs.anthropic.com/en/docs/claude-code) 与[飞书](https://www.feishu.cn/)双向通信，支持两种运行模式。
 
-![Demo](docs/images/demo.png)
+## 使用场景
+
+### 场景一：随时掌握技术趋势
+
+在通勤或休息时，通过飞书让 Claude 帮你追踪 GitHub 热门项目、技术动态：
+
+![GitHub 热门项目查询](docs/images/demo.png)
+
+### 场景二：快速了解项目详情
+
+对某个项目感兴趣？直接让 Claude 帮你调研，获取项目介绍、核心特性、技术栈等信息：
+
+![项目详情查询](docs/images/demo1.png)
+
+### 场景三：获取技术架构与安装指南
+
+需要深入了解一个项目？Claude 可以帮你分析技术架构、查看安装方法：
+
+![技术架构分析](docs/images/demo2.png)
+
+---
 
 ## 两种模式
 
