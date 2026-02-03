@@ -1,0 +1,47 @@
+# Dependencies
+node_modules/
+
+# Build output (will be rebuilt in container)
+dist/
+
+# Environment files (contain secrets)
+.env
+.env.*
+!.env.agent.example
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Git
+.git/
+.gitignore
+
+# Documentation (not needed in container)
+*.md
+!README.md
+docs/
+
+# Test files
+*.test.ts
+*.spec.ts
+__tests__/
+coverage/
+
+# Proposal documents
+.proposal/
+
+# Local data
+data/
+*.log
+
+# Claude Code config (local only)
+.mcp.json
+CLAUDE.md

@@ -8,6 +8,13 @@ dist/
 .env
 .env.*
 .mcp.json
+.mcp.json.bak
+
+# Session data
+data/
+
+# Test files with potential credentials
+test-event.mjs
 
 # Claude Code local settings (may contain credentials)
 .claude/settings.local.json
