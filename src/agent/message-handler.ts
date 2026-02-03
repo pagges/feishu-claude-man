@@ -131,9 +131,18 @@ export class MessageHandler {
       return;
     }
 
-    // Only handle text messages
+    // Handle non-text messages with helpful response
     if (messageType !== 'text') {
-      await this.sender.sendMessage(senderId, '暂时只支持文本消息。');
+      const unsupportedMessages: Record<string, string> = {
+        image: '📷 暂不支持图片消息。请用文字描述图片内容或你想做的事情。',
+        file: '📁 暂不支持文件消息。请用文字描述文件内容或你想做的事情。',
+        audio: '🎤 暂不支持语音消息。请发送文字。',
+        sticker: '',  // Ignore stickers silently
+      };
+      const response = unsupportedMessages[messageType] ?? `暂不支持 ${messageType} 类型消息，请发送文字。`;
+      if (response) {
+        await this.sender.sendMessage(senderId, response);
+      }
       return;
     }
 
