@@ -2,6 +2,8 @@
 
 让 [Claude Code](https://docs.anthropic.com/en/docs/claude-code) 与[飞书](https://www.feishu.cn/)双向通信，支持两种运行模式。
 
+![Demo](docs/images/demo.png)
+
 ## 两种模式
 
 本项目支持 **MCP Server** 和 **Agent 服务** 两种模式，根据你的使用场景选择：
