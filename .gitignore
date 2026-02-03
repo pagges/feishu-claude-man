@@ -1,0 +1,27 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Environment and credentials
+.env
+.env.*
+.mcp.json
+
+# Claude Code local settings (may contain credentials)
+.claude/settings.local.json
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# IDE
+.idea/
+.vscode/
+/.proposal/
+/.claude/
+/CLAUDE.md
