@@ -3,36 +3,7 @@
  *
  * The card is display-only (no action buttons). The user is expected
  * to reply by typing text in the chat.
+ *
+ * Re-exported from smart-card-builder for backwards compatibility.
  */
-export function buildAskCard(question: string): object {
-  return {
-    config: {
-      wide_screen_mode: true,
-    },
-    header: {
-      title: {
-        tag: 'plain_text',
-        content: 'Claude 需要你的确认',
-      },
-      template: 'blue',
-    },
-    elements: [
-      {
-        tag: 'markdown',
-        content: question,
-      },
-      {
-        tag: 'hr',
-      },
-      {
-        tag: 'note',
-        elements: [
-          {
-            tag: 'plain_text',
-            content: '请直接回复数字或文字',
-          },
-        ],
-      },
-    ],
-  };
-}
+export { buildAskCard } from './smart-card-builder.js';

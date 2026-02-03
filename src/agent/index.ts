@@ -11,6 +11,11 @@ import { AgentExecutor } from './agent-executor.js';
 import { SessionStore } from './session-store.js';
 import { MessageHandler } from './message-handler.js';
 import type { ParsedMessageEvent } from './types.js';
+import {
+  buildSmartCard,
+  needsCardFormat,
+  type CardOptions,
+} from '../smart-card-builder.js';
 
 /**
  * Feishu client wrapper for the agent service.
@@ -20,6 +25,10 @@ class AgentFeishuClient {
   private readonly config: ReturnType<typeof loadAgentConfig>;
   private wsClient?: lark.WSClient;
   private messageCallback?: (event: ParsedMessageEvent) => Promise<void>;
+  /** 已处理的消息 ID 缓存，用于去重 */
+  private readonly processedMessageIds = new Set<string>();
+  /** 消息 ID 缓存最大数量 */
+  private readonly maxProcessedIds = 1000;
 
   constructor(config: ReturnType<typeof loadAgentConfig>) {
     this.config = config;
@@ -30,40 +39,25 @@ class AgentFeishuClient {
   }
 
   /**
-   * Check if content needs card format (has code blocks or is long).
+   * Send a message to a user. Uses smart card for rich content, plain text for simple messages.
    */
-  private needsCardFormat(content: string): boolean {
-    // Use card for: code blocks, long content, or explicit markdown
-    return (
-      content.includes('```') ||
-      content.includes('\n\n') ||
-      content.length > 500
-    );
-  }
-
-  /**
-   * Send a message to a user. Uses text for simple messages, card for formatted content.
-   */
-  async sendMessage(userId: string, content: string): Promise<{ messageId: string }> {
+  async sendMessage(
+    userId: string,
+    content: string,
+    cardOptions?: CardOptions,
+  ): Promise<{ messageId: string }> {
     console.log(`[DEBUG] Sending message to ${userId}: ${content.substring(0, 50)}...`);
     try {
       let msgType: string;
       let msgContent: string;
 
-      if (this.needsCardFormat(content)) {
-        // Use interactive card for code blocks and long content
+      if (needsCardFormat(content)) {
+        // Use smart card for rich content
         msgType = 'interactive';
-        msgContent = JSON.stringify({
-          config: { wide_screen_mode: true },
-          elements: [
-            {
-              tag: 'markdown',
-              content: content,
-            },
-          ],
-        });
+        const card = buildSmartCard(content, cardOptions);
+        msgContent = JSON.stringify(card);
       } else {
-        // Use plain text for simple messages
+        // Use plain text for very simple messages
         msgType = 'text';
         msgContent = JSON.stringify({ text: content });
       }
@@ -155,6 +149,32 @@ class AgentFeishuClient {
   }
 
   /**
+   * Check if a message has already been processed (deduplication).
+   */
+  private isMessageProcessed(messageId: string | undefined): boolean {
+    if (!messageId) return false;
+
+    if (this.processedMessageIds.has(messageId)) {
+      console.log(`[DEBUG] Duplicate message detected, skipping: ${messageId}`);
+      return true;
+    }
+
+    // Add to processed set
+    this.processedMessageIds.add(messageId);
+
+    // Evict old entries if cache is too large
+    if (this.processedMessageIds.size > this.maxProcessedIds) {
+      const iterator = this.processedMessageIds.values();
+      const firstValue = iterator.next().value;
+      if (firstValue) {
+        this.processedMessageIds.delete(firstValue);
+      }
+    }
+
+    return false;
+  }
+
+  /**
    * Start listening for Feishu events.
    */
   async start(): Promise<void> {
@@ -162,6 +182,12 @@ class AgentFeishuClient {
       'im.message.receive_v1': async (data: Record<string, unknown>) => {
         console.log('[DEBUG] Received im.message.receive_v1 event:', JSON.stringify(data).substring(0, 200));
         const event = this.parseEvent(data);
+
+        // Deduplicate messages by messageId
+        if (event && this.isMessageProcessed(event.messageId)) {
+          return;
+        }
+
         if (event && this.messageCallback) {
           try {
             await this.messageCallback(event);
