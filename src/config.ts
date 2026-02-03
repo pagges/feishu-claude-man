@@ -5,10 +5,10 @@ export type LogLevel = z.infer<typeof LogLevel>;
 
 const ConfigSchema = z.object({
   appId: z
-    .string({ required_error: 'FEISHU_APP_ID is required' })
+    .string({ message: 'FEISHU_APP_ID is required' })
     .min(1, 'FEISHU_APP_ID must not be empty'),
   appSecret: z
-    .string({ required_error: 'FEISHU_APP_SECRET is required' })
+    .string({ message: 'FEISHU_APP_SECRET is required' })
     .min(1, 'FEISHU_APP_SECRET must not be empty'),
   targetUserId: z.string().min(1).optional(),
   logLevel: LogLevel.default('info'),

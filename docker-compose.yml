@@ -1,0 +1,57 @@
+# Docker Compose configuration for Feishu Claude Agent Service
+# Usage:
+#   1. Copy .env.agent.example to .env.agent and fill in your credentials
+#   2. Run: docker-compose up -d
+#   3. View logs: docker-compose logs -f
+
+version: '3.8'
+
+services:
+  feishu-claude-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: feishu-claude-agent
+    restart: unless-stopped
+
+    # Environment variables from .env.agent file
+    env_file:
+      - .env.agent
+
+    # Override or add environment variables
+    environment:
+      - NODE_ENV=production
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - AGENT_SESSION_PERSIST_PATH=/app/data/sessions.json
+
+    # Persist session data and mount Claude credentials
+    volumes:
+      - feishu-claude-data:/app/data
+      # Required: Mount Claude Code credentials from host
+      - ~/.claude:/home/claude/.claude:ro
+      # Optional: mount a workspace directory for agent to access
+      # - /path/to/your/workspace:/workspace:rw
+
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    # No ports exposed - service uses outbound WebSocket only
+    # network_mode: bridge
+
+volumes:
+  feishu-claude-data:
+    driver: local

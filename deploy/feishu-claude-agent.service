@@ -1,0 +1,61 @@
+# Systemd service file for Feishu Claude Agent
+#
+# Installation:
+#   1. Copy this file to /etc/systemd/system/feishu-claude-agent.service
+#   2. Create /opt/feishu-claude directory and deploy the application
+#   3. Copy .env.agent to /opt/feishu-claude/.env
+#   4. Run: systemctl daemon-reload
+#   5. Run: systemctl enable feishu-claude-agent
+#   6. Run: systemctl start feishu-claude-agent
+#
+# View logs:
+#   journalctl -u feishu-claude-agent -f
+
+[Unit]
+Description=Feishu Claude Agent Service
+Documentation=https://github.com/anthropics/feishu-claude-bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=claude
+Group=claude
+
+# Working directory
+WorkingDirectory=/opt/feishu-claude
+
+# Load environment from file
+EnvironmentFile=/opt/feishu-claude/.env
+
+# Node.js settings
+Environment=NODE_ENV=production
+Environment=NODE_OPTIONS=--max-old-space-size=1024
+
+# Start command
+ExecStart=/usr/bin/node /opt/feishu-claude/dist/agent/index.js
+
+# Restart policy
+Restart=always
+RestartSec=10
+StartLimitInterval=60
+StartLimitBurst=3
+
+# Security hardening
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/opt/feishu-claude/data
+
+# Resource limits
+MemoryMax=2G
+CPUQuota=200%
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=feishu-claude-agent
+
+[Install]
+WantedBy=multi-user.target
