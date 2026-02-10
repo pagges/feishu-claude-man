@@ -40,17 +40,34 @@ export const ASK_TOOL_DESCRIPTION =
  *
  * @param feishuClient - The FeishuClient instance for sending messages
  * @param sessionManager - The SessionManager for tracking pending questions
+ * @param isWsEnabled - Callback that returns whether WebSocket is active
  * @returns An async handler compatible with McpServer.tool()
  */
 export function createAskHandler(
   feishuClient: FeishuClient,
   sessionManager: SessionManager,
+  isWsEnabled: () => boolean = () => true,
 ) {
   return async (args: {
     question: string;
     timeoutMs: number;
     userId?: string;
   }) => {
+    // Fast-fail if WebSocket is not available (another service holds the connection)
+    if (!isWsEnabled()) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text:
+              'feishu_ask 不可用：WebSocket 连接被 Agent 服务占用，无法接收飞书回复。' +
+              '请改用终端标准交互（AskUserQuestion）向用户提问，或使用 feishu_notify 发送单向通知。',
+          },
+        ],
+        isError: true,
+      };
+    }
+
     const targetUserId = args.userId ?? feishuClient.getDefaultUserId();
 
     if (!targetUserId) {

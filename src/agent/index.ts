@@ -16,6 +16,15 @@ import {
   needsCardFormat,
   type CardOptions,
 } from '../smart-card-builder.js';
+import {
+  cleanupStaleProcess,
+  writePidFile,
+  acquireWsLock,
+  releaseWsLock,
+  removePidFile,
+  registerExitCleanup,
+  AGENT_PID_FILE,
+} from '../process-lock.js';
 
 /**
  * Feishu client wrapper for the agent service.
@@ -224,6 +233,10 @@ class AgentFeishuClient {
 async function main(): Promise<void> {
   console.log('🚀 Starting Feishu Claude Agent Service...');
 
+  // 0. Process management: clean stale processes and write PID file
+  await cleanupStaleProcess(AGENT_PID_FILE);
+  writePidFile(AGENT_PID_FILE);
+
   // Load configuration
   const config = loadAgentConfig();
   console.log(`📁 Working directory: ${config.agent.workingDirectory}`);
@@ -253,9 +266,20 @@ async function main(): Promise<void> {
     await messageHandler.handle(event);
   });
 
+  // Acquire WebSocket lock (agent always force-acquires)
+  const wsLockAcquired = acquireWsLock('agent');
+  if (!wsLockAcquired) {
+    // Should not happen since agent always force-acquires, but handle gracefully
+    console.error('❌ Failed to acquire WebSocket lock');
+    process.exit(1);
+  }
+
   // Start Feishu event listener
   await feishuClient.start();
   console.log('✅ Feishu WebSocket connected, waiting for messages...');
+
+  // Register exit cleanup
+  registerExitCleanup(AGENT_PID_FILE, true);
 
   // Session cleanup interval (every hour)
   const cleanupInterval = setInterval(() => {
@@ -269,6 +293,8 @@ async function main(): Promise<void> {
   const shutdown = async (): Promise<void> => {
     console.log('\n🛑 Shutting down...');
     clearInterval(cleanupInterval);
+    releaseWsLock();
+    removePidFile(AGENT_PID_FILE);
     await feishuClient.stop();
     console.log('👋 Goodbye!');
     process.exit(0);

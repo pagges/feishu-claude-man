@@ -6,6 +6,15 @@ import { loadConfig } from './config.js';
 import { SessionManager } from './session-manager.js';
 import { MessageHistory } from './message-history.js';
 import { FeishuClient } from './feishu-client.js';
+import {
+  cleanupStaleProcess,
+  writePidFile,
+  acquireWsLock,
+  releaseWsLock,
+  removePidFile,
+  registerExitCleanup,
+  MCP_PID_FILE,
+} from './process-lock.js';
 
 import {
   NOTIFY_TOOL_NAME,
@@ -33,6 +42,10 @@ import {
  * WebSocket event listener, and connects the MCP stdio transport.
  */
 async function main(): Promise<void> {
+  // 0. Process management: clean stale processes and write PID file
+  await cleanupStaleProcess(MCP_PID_FILE);
+  writePidFile(MCP_PID_FILE);
+
   // 1. Load configuration from environment variables
   const config = loadConfig();
 
@@ -69,7 +82,7 @@ async function main(): Promise<void> {
     notifyHandler,
   );
 
-  const askHandler = createAskHandler(feishuClient, sessionManager);
+  const askHandler = createAskHandler(feishuClient, sessionManager, () => wsEnabled);
   server.tool(
     ASK_TOOL_NAME,
     ASK_TOOL_DESCRIPTION,
@@ -85,18 +98,36 @@ async function main(): Promise<void> {
     historyHandler,
   );
 
-  // 7. Start Feishu WebSocket event listener
-  await feishuClient.startEventListener();
-  console.error('[feishu-bridge] Feishu WebSocket event listener started');
+  // 7. Try to acquire WebSocket lock and start event listener
+  let wsEnabled = false;
+  const wsLockAcquired = acquireWsLock('mcp');
 
-  // 8. Connect stdio transport
+  if (wsLockAcquired) {
+    await feishuClient.startEventListener();
+    wsEnabled = true;
+    console.error('[feishu-bridge] Feishu WebSocket event listener started');
+  } else {
+    console.error(
+      '[feishu-bridge] WebSocket skipped — another service holds the connection. ' +
+        'feishu_notify works, feishu_ask will fall back to terminal.',
+    );
+  }
+
+  // 8. Register exit cleanup
+  registerExitCleanup(MCP_PID_FILE, wsLockAcquired);
+
+  // 9. Connect stdio transport
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error('[feishu-bridge] MCP Server connected via stdio');
 
-  // 9. Graceful shutdown handling
+  // 10. Graceful shutdown handling
   const shutdown = async () => {
     console.error('[feishu-bridge] Shutting down...');
+    if (wsLockAcquired) {
+      releaseWsLock();
+    }
+    removePidFile(MCP_PID_FILE);
     await server.close();
     process.exit(0);
   };
