@@ -7,6 +7,9 @@
  * Lock files:
  *   /tmp/feishu-claude-ws.lock   — WebSocket exclusive lock (only one holder)
  *
+ * Socket files:
+ *   /tmp/feishu-claude-ipc.sock  — IPC Unix socket for MCP-Agent communication
+ *
  * PID files:
  *   /tmp/feishu-claude-mcp.pid   — MCP bridge process
  *   /tmp/feishu-claude-agent.pid — Agent service process
@@ -18,6 +21,7 @@ import path from 'node:path';
 const LOCK_DIR = '/tmp';
 
 export const WS_LOCK_FILE = path.join(LOCK_DIR, 'feishu-claude-ws.lock');
+export const IPC_SOCKET_PATH = path.join(LOCK_DIR, 'feishu-claude-ipc.sock');
 export const MCP_PID_FILE = path.join(LOCK_DIR, 'feishu-claude-mcp.pid');
 export const AGENT_PID_FILE = path.join(LOCK_DIR, 'feishu-claude-agent.pid');
 

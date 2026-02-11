@@ -15,6 +15,7 @@ import {
   registerExitCleanup,
   MCP_PID_FILE,
 } from './process-lock.js';
+import { IpcClient } from './ipc/client.js';
 
 import {
   NOTIFY_TOOL_NAME,
@@ -73,8 +74,11 @@ async function main(): Promise<void> {
     version: '1.0.0',
   });
 
-  // 6. Register tools
-  const notifyHandler = createNotifyHandler(feishuClient);
+  // 5.5. Create IPC client for communicating with Agent (when Agent holds WebSocket)
+  const ipcClient = new IpcClient();
+
+  // 6. Register tools (with IPC fallback support)
+  const notifyHandler = createNotifyHandler(feishuClient, ipcClient);
   server.tool(
     NOTIFY_TOOL_NAME,
     NOTIFY_TOOL_DESCRIPTION,
@@ -82,7 +86,7 @@ async function main(): Promise<void> {
     notifyHandler,
   );
 
-  const askHandler = createAskHandler(feishuClient, sessionManager, () => wsEnabled);
+  const askHandler = createAskHandler(feishuClient, sessionManager, () => wsEnabled, ipcClient);
   server.tool(
     ASK_TOOL_NAME,
     ASK_TOOL_DESCRIPTION,
@@ -107,10 +111,19 @@ async function main(): Promise<void> {
     wsEnabled = true;
     console.error('[feishu-bridge] Feishu WebSocket event listener started');
   } else {
-    console.error(
-      '[feishu-bridge] WebSocket skipped — another service holds the connection. ' +
-        'feishu_notify works, feishu_ask will fall back to terminal.',
-    );
+    // Check if Agent IPC is available for fallback
+    const agentAvailable = ipcClient.isAgentAvailable();
+    if (agentAvailable) {
+      console.error(
+        '[feishu-bridge] WebSocket held by Agent, IPC available. ' +
+          'feishu_ask and feishu_notify will use IPC to communicate with Agent.',
+      );
+    } else {
+      console.error(
+        '[feishu-bridge] WebSocket skipped and Agent IPC not available. ' +
+          'feishu_notify works directly, feishu_ask will fall back to terminal.',
+      );
+    }
   }
 
   // 8. Register exit cleanup

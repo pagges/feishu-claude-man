@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { FeishuClient } from '../feishu-client.js';
+import type { IpcClient } from '../ipc/client.js';
 
 /**
  * Zod schema shape for the feishu_notify tool input.
@@ -30,10 +31,17 @@ export const NOTIFY_TOOL_DESCRIPTION =
  * Sends a text message to a Feishu user and returns a success or error result
  * in the MCP CallToolResult format.
  *
+ * When MCP doesn't hold the WebSocket connection, falls back to IPC communication
+ * with the Agent to forward the notification.
+ *
  * @param feishuClient - The FeishuClient instance for sending messages
+ * @param ipcClient - Optional IPC client for communicating with Agent
  * @returns An async handler compatible with McpServer.tool()
  */
-export function createNotifyHandler(feishuClient: FeishuClient) {
+export function createNotifyHandler(
+  feishuClient: FeishuClient,
+  ipcClient?: IpcClient,
+) {
   return async (args: { message: string; userId?: string }) => {
     const targetUserId = args.userId ?? feishuClient.getDefaultUserId();
 
@@ -49,6 +57,7 @@ export function createNotifyHandler(feishuClient: FeishuClient) {
       };
     }
 
+    // Try direct send first
     try {
       const { messageId } = await feishuClient.sendMessage(
         targetUserId,
@@ -63,9 +72,45 @@ export function createNotifyHandler(feishuClient: FeishuClient) {
           },
         ],
       };
-    } catch (error: unknown) {
+    } catch (directError: unknown) {
+      // If direct send fails and IPC is available, try IPC
+      if (ipcClient?.isAgentAvailable()) {
+        console.error('[feishu_notify] Direct send failed, trying IPC to Agent...');
+        try {
+          const result = await ipcClient.notify({
+            message: args.message,
+            userId: args.userId,
+          });
+
+          if (result.success) {
+            return {
+              content: [
+                {
+                  type: 'text' as const,
+                  text: `Message sent via Agent\nMessage ID: ${result.messageId}`,
+                },
+              ],
+            };
+          } else {
+            return {
+              content: [
+                {
+                  type: 'text' as const,
+                  text: `Failed to send message via Agent: ${result.error}`,
+                },
+              ],
+              isError: true,
+            };
+          }
+        } catch (ipcError: unknown) {
+          // IPC also failed, return original error
+          console.error('[feishu_notify] IPC also failed:', ipcError);
+        }
+      }
+
+      // Return original error
       const errorMessage =
-        error instanceof Error ? error.message : String(error);
+        directError instanceof Error ? directError.message : String(directError);
       return {
         content: [
           {

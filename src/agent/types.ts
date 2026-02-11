@@ -77,4 +77,10 @@ export interface ParsedMessageEvent {
   messageId?: string;
   /** Chat ID (for group messages) */
   chatId?: string;
+  /** File key for file messages (used to download the file) */
+  fileKey?: string;
+  /** File name for file messages */
+  fileName?: string;
+  /** Image key for image messages */
+  imageKey?: string;
 }

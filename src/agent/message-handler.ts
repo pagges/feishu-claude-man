@@ -6,6 +6,9 @@ import type { AgentExecutor, AgentMessage } from './agent-executor.js';
 import type { SessionStore } from './session-store.js';
 import type { ParsedMessageEvent, AgentConfig } from './types.js';
 import type { CardOptions, MessageSemantic } from '../smart-card-builder.js';
+import type { PendingMcpQuestionRegistry } from './pending-mcp-questions.js';
+import type { ResourceType, DownloadResult } from './file-downloader.js';
+import { findFeishuDocUrl, type DocReadResult } from './doc-reader.js';
 
 /**
  * Track active abort controllers for cancellation.
@@ -21,6 +24,13 @@ export interface MessageSender {
     content: string,
     cardOptions?: CardOptions,
   ): Promise<{ messageId: string }>;
+  downloadResource?(
+    messageId: string,
+    fileKey: string,
+    resourceType: ResourceType,
+    originalFileName?: string,
+  ): Promise<DownloadResult>;
+  readDoc?(url: string): Promise<DocReadResult>;
 }
 
 /**
@@ -106,19 +116,24 @@ export class MessageHandler {
   private readonly agentExecutor: AgentExecutor;
   private readonly config: AgentConfig;
   private readonly enableProgressUpdates: boolean;
+  private readonly pendingMcpQuestions?: PendingMcpQuestionRegistry;
 
   constructor(
     sender: MessageSender,
     sessionStore: SessionStore,
     agentExecutor: AgentExecutor,
     config: AgentConfig,
-    options?: { enableProgressUpdates?: boolean },
+    options?: {
+      enableProgressUpdates?: boolean;
+      pendingMcpQuestions?: PendingMcpQuestionRegistry;
+    },
   ) {
     this.sender = sender;
     this.sessionStore = sessionStore;
     this.agentExecutor = agentExecutor;
     this.config = config;
     this.enableProgressUpdates = options?.enableProgressUpdates ?? true;
+    this.pendingMcpQuestions = options?.pendingMcpQuestions;
   }
 
   /**
@@ -141,11 +156,21 @@ export class MessageHandler {
       return;
     }
 
-    // Handle non-text messages with helpful response
+    // Handle file and image messages by downloading and forwarding to agent
+    if (messageType === 'file' || messageType === 'image') {
+      await this.handleFileMessage(event);
+      return;
+    }
+
+    // Handle post (rich text) messages - may contain text + images
+    if (messageType === 'post') {
+      await this.handlePostMessage(event);
+      return;
+    }
+
+    // Handle other non-text messages with helpful response
     if (messageType !== 'text') {
       const unsupportedMessages: Record<string, string> = {
-        image: '📷 暂不支持图片消息\n\n请用文字描述图片内容或你想做的事情',
-        file: '📁 暂不支持文件消息\n\n请用文字描述文件内容或你想做的事情',
         audio: '🎤 暂不支持语音消息\n\n请发送文字',
         sticker: '',  // Ignore stickers silently
       };
@@ -160,6 +185,20 @@ export class MessageHandler {
     const trimmedContent = content.trim();
     if (!trimmedContent) {
       return; // Ignore empty messages
+    }
+
+    // Check if this is a reply to an MCP pending question
+    if (this.pendingMcpQuestions?.tryResolve(senderId, trimmedContent)) {
+      console.log(`[MessageHandler] Message routed to MCP as question reply`);
+      // Optionally send acknowledgment (the MCP tool will handle the rest)
+      return;
+    }
+
+    // Check for Feishu document URLs and auto-fetch content
+    const docUrl = findFeishuDocUrl(trimmedContent);
+    if (docUrl && this.sender.readDoc) {
+      await this.handleDocUrl(senderId, trimmedContent, docUrl);
+      return;
     }
 
     // Check for slash commands
@@ -317,6 +356,189 @@ export class MessageHandler {
     }
 
     await this.sender.sendMessage(userId, `会话已就绪，可以继续对话。`);
+  }
+
+  /**
+   * Handle a message containing a Feishu document URL.
+   * Fetches document content and forwards to agent with context.
+   */
+  private async handleDocUrl(
+    userId: string,
+    originalMessage: string,
+    docUrl: ReturnType<typeof findFeishuDocUrl> & {},
+  ): Promise<void> {
+    await this.sender.sendMessage(
+      userId,
+      `📄 正在读取飞书${docUrl.type === 'wiki' ? '知识库' : ''}文档...`,
+      { semantic: 'progress', compact: true },
+    );
+
+    try {
+      const doc = await this.sender.readDoc!(originalMessage);
+
+      // Build prompt with document content
+      const truncated = doc.content.length > 15000;
+      const contentToSend = truncated
+        ? doc.content.substring(0, 15000) + '\n\n... (内容已截断，共 ' + doc.content.length + ' 字符)'
+        : doc.content;
+
+      const prompt = `用户分享了一个飞书文档，我已通过 API 获取了文档内容。
+
+**文档标题**: ${doc.title || '(无标题)'}
+**文档 ID**: ${doc.documentId}
+${truncated ? `**注意**: 文档较长(${doc.content.length}字符)，已截断到前15000字符\n` : ''}
+**用户原始消息**: ${originalMessage}
+
+---
+**文档内容**:
+${contentToSend}
+---
+
+请根据文档内容回复用户。如果用户的消息中包含具体问题或指令，请针对性回答；否则请概述文档的主要内容。`;
+
+      await this.handleUserMessage(userId, prompt);
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      console.error(`[MessageHandler] Doc read failed:`, error);
+
+      let hint = '';
+      if (errorMsg.includes('1770002') || errorMsg.includes('not found')) {
+        hint = '\n\n可能原因：文档不存在或已被删除';
+      } else if (errorMsg.includes('permission') || errorMsg.includes('403') || errorMsg.includes('99991668')) {
+        hint = '\n\n可能原因：飞书应用没有文档的访问权限。请确保：\n1. 应用已添加 `docx:document:readonly` 权限\n2. 文档已对应用开放访问权限（分享给应用机器人）';
+      }
+
+      await this.sender.sendMessage(
+        userId,
+        `读取飞书文档失败：${errorMsg}${hint}`,
+        { semantic: 'error' },
+      );
+    }
+  }
+
+  /**
+   * Handle a post (rich text) message - extract text and optionally download embedded images.
+   */
+  private async handlePostMessage(event: ParsedMessageEvent): Promise<void> {
+    const { senderId, content, messageId, imageKey } = event;
+
+    // Check for Feishu document URLs in post content
+    const docUrl = findFeishuDocUrl(content);
+    if (docUrl && this.sender.readDoc) {
+      await this.handleDocUrl(senderId, content, docUrl);
+      return;
+    }
+
+    if (imageKey && messageId && this.sender.downloadResource) {
+      // Post contains an embedded image - download it and include with text
+      await this.sender.sendMessage(
+        senderId,
+        '📥 正在下载富文本中的图片...',
+        { semantic: 'progress', compact: true },
+      );
+
+      try {
+        const result = await this.sender.downloadResource(
+          messageId,
+          imageKey,
+          'image',
+        );
+
+        const prompt = content
+          ? `用户通过飞书发送了一条富文本消息，其中包含一张图片。\n\n文字内容：\n${content}\n\n图片已下载到本地路径：${result.filePath}\n\n请读取图片内容，结合文字，回复用户。`
+          : `用户通过飞书发送了一张图片，已下载到本地路径：${result.filePath}\n\n请使用 Read 工具读取这张图片并描述其内容，然后询问用户需要对图片做什么。`;
+
+        await this.handleUserMessage(senderId, prompt);
+      } catch (error) {
+        const errorMsg = error instanceof Error ? error.message : String(error);
+        console.error(`[MessageHandler] Post image download failed:`, error);
+        // Fall back to text-only if image download fails
+        if (content.trim()) {
+          await this.handleUserMessage(senderId, content);
+        } else {
+          await this.sender.sendMessage(
+            senderId,
+            `下载图片失败：${errorMsg}`,
+            { semantic: 'error', compact: true },
+          );
+        }
+      }
+    } else if (content.trim()) {
+      // Post with text only (no images or no download capability)
+      await this.handleUserMessage(senderId, content);
+    } else {
+      await this.sender.sendMessage(
+        senderId,
+        '收到空的富文本消息',
+        { semantic: 'warning', compact: true },
+      );
+    }
+  }
+
+  /**
+   * Handle a file or image message by downloading and forwarding to agent.
+   */
+  private async handleFileMessage(event: ParsedMessageEvent): Promise<void> {
+    const { senderId, messageType, messageId, fileKey, fileName, imageKey } = event;
+
+    // Determine the resource key and type
+    const resourceKey = messageType === 'image' ? imageKey : fileKey;
+    const resourceType: ResourceType = messageType === 'image' ? 'image' : 'file';
+
+    if (!resourceKey || !messageId) {
+      await this.sender.sendMessage(
+        senderId,
+        `无法处理${messageType === 'image' ? '图片' : '文件'}消息：缺少资源信息`,
+        { semantic: 'error', compact: true },
+      );
+      return;
+    }
+
+    if (!this.sender.downloadResource) {
+      await this.sender.sendMessage(
+        senderId,
+        `当前模式暂不支持${messageType === 'image' ? '图片' : '文件'}下载`,
+        { semantic: 'warning', compact: true },
+      );
+      return;
+    }
+
+    // Notify user that we're downloading
+    const typeLabel = messageType === 'image' ? '图片' : `文件 ${fileName || ''}`;
+    await this.sender.sendMessage(
+      senderId,
+      `📥 正在下载${typeLabel}...`,
+      { semantic: 'progress', compact: true },
+    );
+
+    try {
+      // Download the file
+      const result = await this.sender.downloadResource(
+        messageId,
+        resourceKey,
+        resourceType,
+        fileName,
+      );
+
+      // Build prompt for Claude with file context
+      let prompt: string;
+      if (messageType === 'image') {
+        prompt = `用户通过飞书发送了一张图片，已下载到本地路径：${result.filePath}\n\n请使用 Read 工具读取这张图片并描述其内容，然后询问用户需要对图片做什么。`;
+      } else {
+        prompt = `用户通过飞书发送了一个文件，已下载到本地路径：${result.filePath}\n文件名：${result.fileName || '未知'}\n\n请使用 Read 工具读取这个文件的内容，然后向用户概述文件内容并询问需要做什么。`;
+      }
+
+      // Forward to agent as a text message
+      await this.handleUserMessage(senderId, prompt);
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      console.error(`[MessageHandler] File download failed:`, error);
+      await this.sender.sendMessage(
+        senderId,
+        `下载${typeLabel}失败：${errorMsg}\n\n请检查飞书应用是否已添加 \`im:resource\` 权限`,
+        { semantic: 'error' },
+      );
+    }
   }
 
   /**

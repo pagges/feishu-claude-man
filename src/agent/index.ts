@@ -24,7 +24,36 @@ import {
   removePidFile,
   registerExitCleanup,
   AGENT_PID_FILE,
+  IPC_SOCKET_PATH,
 } from '../process-lock.js';
+import { IpcServer } from '../ipc/server.js';
+import { PendingMcpQuestionRegistry } from './pending-mcp-questions.js';
+import { buildAskCard } from '../smart-card-builder.js';
+import {
+  downloadResource,
+  cleanupOldFiles,
+  type ResourceType,
+  type DownloadResult,
+} from './file-downloader.js';
+import {
+  readFeishuDoc,
+  findFeishuDocUrl,
+  type DocReadResult,
+} from './doc-reader.js';
+
+/** Node in a Feishu post (rich text) paragraph. */
+interface PostNode {
+  tag: string;
+  text?: string;
+  href?: string;
+  image_key?: string;
+}
+
+/** Feishu post (rich text) content structure. */
+interface PostContent {
+  title?: string;
+  content?: PostNode[][];
+}
 
 /**
  * Feishu client wrapper for the agent service.
@@ -97,6 +126,31 @@ class AgentFeishuClient {
   }
 
   /**
+   * Read a Feishu document by URL.
+   */
+  async readDoc(url: string): Promise<DocReadResult> {
+    return readFeishuDoc(this.larkClient, url);
+  }
+
+  /**
+   * Download a file or image resource from a Feishu message.
+   */
+  async downloadResource(
+    messageId: string,
+    fileKey: string,
+    resourceType: ResourceType,
+    originalFileName?: string,
+  ): Promise<DownloadResult> {
+    return downloadResource(
+      this.larkClient,
+      messageId,
+      fileKey,
+      resourceType,
+      originalFileName,
+    );
+  }
+
+  /**
    * Register a callback for incoming messages.
    */
   onMessage(callback: (event: ParsedMessageEvent) => Promise<void>): void {
@@ -113,10 +167,14 @@ class AgentFeishuClient {
 
       const messageType = (message.message_type as string) || 'unknown';
 
-      // Extract text content based on message type
+      // Extract content based on message type
       let content = '';
+      let fileKey: string | undefined;
+      let fileName: string | undefined;
+      let imageKey: string | undefined;
+      const rawContent = message.content as string | undefined;
+
       if (messageType === 'text') {
-        const rawContent = message.content as string | undefined;
         if (rawContent) {
           try {
             const parsed = JSON.parse(rawContent) as { text?: string };
@@ -125,11 +183,56 @@ class AgentFeishuClient {
             content = rawContent;
           }
         }
+      } else if (messageType === 'post') {
+        // Rich text messages: extract text and image keys
+        if (rawContent) {
+          try {
+            const parsed = JSON.parse(rawContent) as Record<string, PostContent>;
+            // Post content is keyed by language (zh_cn, en_us, etc.)
+            const postBody = Object.values(parsed)[0];
+            if (postBody) {
+              const textParts: string[] = [];
+              const imageKeys: string[] = [];
+              if (postBody.title) textParts.push(postBody.title);
+              for (const paragraph of postBody.content || []) {
+                for (const node of paragraph) {
+                  if (node.tag === 'text' && node.text) {
+                    textParts.push(node.text);
+                  } else if (node.tag === 'a' && node.text) {
+                    textParts.push(`${node.text}(${node.href || ''})`);
+                  } else if (node.tag === 'img' && node.image_key) {
+                    imageKeys.push(node.image_key);
+                  }
+                }
+              }
+              content = textParts.join('\n');
+              // Use the first image if present
+              if (imageKeys.length > 0) {
+                imageKey = imageKeys[0];
+              }
+            }
+          } catch {
+            content = rawContent;
+          }
+        }
+        if (!content) content = '[富文本消息]';
       } else if (messageType === 'image') {
-        // Image messages are not supported yet
-        content = '[图片消息] 暂不支持图片，请发送文字描述';
+        if (rawContent) {
+          try {
+            const parsed = JSON.parse(rawContent) as { image_key?: string };
+            imageKey = parsed.image_key;
+          } catch { /* ignore parse errors */ }
+        }
+        content = '[图片消息]';
       } else if (messageType === 'file') {
-        content = '[文件消息] 暂不支持文件，请发送文字描述';
+        if (rawContent) {
+          try {
+            const parsed = JSON.parse(rawContent) as { file_key?: string; file_name?: string };
+            fileKey = parsed.file_key;
+            fileName = parsed.file_name;
+          } catch { /* ignore parse errors */ }
+        }
+        content = fileName ? `[文件消息] ${fileName}` : '[文件消息]';
       } else if (messageType === 'audio') {
         content = '[语音消息] 暂不支持语音，请发送文字';
       } else if (messageType === 'sticker') {
@@ -151,6 +254,9 @@ class AgentFeishuClient {
         messageType,
         messageId: message.message_id as string | undefined,
         chatId: message.chat_id as string | undefined,
+        fileKey,
+        fileName,
+        imageKey,
       };
     } catch {
       return null;
@@ -253,11 +359,100 @@ async function main(): Promise<void> {
 
   const agentExecutor = new AgentExecutor(config.agent);
 
+  // Create pending MCP question registry
+  const pendingMcpQuestions = new PendingMcpQuestionRegistry();
+
+  // Create IPC server for MCP communication
+  const ipcServer = new IpcServer();
+
+  // Handle ask requests from MCP
+  ipcServer.onAsk(async (req) => {
+    const userId = req.userId || config.feishu.defaultUserId;
+    if (!userId) {
+      return {
+        mcpRequestId: req.mcpRequestId,
+        success: false,
+        error: 'No user ID specified and no default user configured',
+      };
+    }
+
+    try {
+      // Build ask card and send to Feishu
+      const card = buildAskCard(req.question);
+      const cardContent = JSON.stringify(card);
+
+      const response = await feishuClient.sendMessage(
+        userId,
+        `🤔 **Claude 需要你的确认**\n\n${req.question}\n\n💬 请直接回复文字`,
+      );
+      const messageId = response.messageId;
+
+      console.log(`[IpcServer] Sent ask to Feishu, messageId=${messageId}, waiting for reply...`);
+
+      // Register pending question and wait for reply
+      const replyPromise = pendingMcpQuestions.register({
+        mcpRequestId: req.mcpRequestId,
+        feishuMessageId: messageId,
+        question: req.question,
+        userId,
+        timeoutMs: req.timeoutMs,
+      });
+
+      // Wait for reply
+      const reply = await replyPromise;
+
+      console.log(`[IpcServer] Received reply for mcpRequestId=${req.mcpRequestId}`);
+
+      return {
+        mcpRequestId: req.mcpRequestId,
+        success: true,
+        reply,
+        messageId,
+      };
+    } catch (error) {
+      console.error(`[IpcServer] Ask failed:`, error);
+      return {
+        mcpRequestId: req.mcpRequestId,
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  });
+
+  // Handle notify requests from MCP
+  ipcServer.onNotify(async (req) => {
+    const userId = req.userId || config.feishu.defaultUserId;
+    if (!userId) {
+      return {
+        success: false,
+        error: 'No user ID specified and no default user configured',
+      };
+    }
+
+    try {
+      const response = await feishuClient.sendMessage(userId, req.message);
+      return {
+        success: true,
+        messageId: response.messageId,
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  });
+
+  // Start IPC server
+  await ipcServer.start();
+  console.log(`🔌 IPC server started at ${IPC_SOCKET_PATH}`);
+
   const messageHandler = new MessageHandler(
     feishuClient,
     sessionStore,
     agentExecutor,
     config.agent,
+    { pendingMcpQuestions },
   );
 
   // Register message handler
@@ -281,18 +476,20 @@ async function main(): Promise<void> {
   // Register exit cleanup
   registerExitCleanup(AGENT_PID_FILE, true);
 
-  // Session cleanup interval (every hour)
+  // Session and file cleanup interval (every hour)
   const cleanupInterval = setInterval(() => {
     const cleaned = sessionStore.cleanup(config.agent.sessionTimeoutMs);
     if (cleaned > 0) {
       console.log(`🧹 Cleaned up ${cleaned} expired sessions`);
     }
+    cleanupOldFiles();
   }, 60 * 60 * 1000);
 
   // Graceful shutdown
   const shutdown = async (): Promise<void> => {
     console.log('\n🛑 Shutting down...');
     clearInterval(cleanupInterval);
+    ipcServer.stop();
     releaseWsLock();
     removePidFile(AGENT_PID_FILE);
     await feishuClient.stop();
